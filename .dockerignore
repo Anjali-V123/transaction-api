@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+transactions.db
+.env
+.pytest_cache/
+node_modules/
+frontend/dist/
+.git/
