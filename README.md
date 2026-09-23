@@ -66,6 +66,27 @@ before either replica starts — `docker-compose.yml` runs it as a
 for convenience in single-instance local dev, but it's wrapped to survive
 the race rather than crash if it ever does run concurrently.
 
+## A second real bug: overselling under concurrent orders
+
+Order creation originally read an item's stock, subtracted in Python, and
+wrote it back. Under concurrency that's a classic lost update: several
+requests read the same quantity and each writes back its own result. A
+real-Postgres test (`tests/test_concurrency.py`) that releases 12
+simultaneous orders at an item with 5 units in stock showed **all 12
+succeeding**.
+
+The fix is a row-level lock: order creation now loads the inventory row
+with `SELECT ... FOR UPDATE` (`with_for_update()` in SQLAlchemy), so
+concurrent orders for the same SKU queue on that row until the previous
+transaction commits. Payment does the same on the order row, so two
+concurrent `/pay` calls can't both see `PENDING` and restore stock twice.
+The same test now shows exactly 5 orders succeed and stock ends at 0.
+
+The same review closed an authorization gap: `GET /orders` and
+`GET /orders/{id}` were public. Both now require a token; customers see
+only their own orders (someone else's order returns `404`, so IDs can't
+be probed) and admins see all.
+
 ## Tech stack
 
 - **FastAPI** + **SQLAlchemy** — REST API, transaction management
@@ -80,11 +101,12 @@ the race rather than crash if it ever does run concurrently.
 - **nginx** — round-robin load balancer across two API replicas
 - **Docker Compose** — postgres + redis + migrate + api1 + api2 + nginx,
   one command to run the whole system
-- **pytest** — 19 tests: signup/login/auth (8), and orders/payments (11)
+- **pytest** — 22 tests: signup/login/auth (8), orders/payments (13), and a
+  real-Postgres concurrent-ordering test (1)
   covering success path, idempotent replay, insufficient inventory,
   unknown SKU, payment failure with rollback, payment success,
-  double-payment rejection, cross-customer authorization, and
-  admin-only inventory management
+  double-payment rejection, cross-customer authorization, order
+  visibility, and admin-only inventory management
 
 ## Running the full system
 
@@ -131,6 +153,14 @@ npm run dev
 ```bash
 source .venv/bin/activate
 pytest tests/ -v
+```
+
+The concurrency test needs a real Postgres and is skipped otherwise:
+
+```bash
+docker run -d --name pgtest -e POSTGRES_USER=app -e POSTGRES_PASSWORD=app \
+  -e POSTGRES_DB=transactions_test -p 5433:5432 postgres:16-alpine
+CONCURRENCY_TEST_DATABASE_URL=postgresql://app:app@localhost:5433/transactions_test pytest tests/ -v
 ```
 
 ## Promoting an account to admin
