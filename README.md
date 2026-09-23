@@ -101,8 +101,7 @@ be probed) and admins see all.
 - **nginx** — round-robin load balancer across two API replicas
 - **Docker Compose** — postgres + redis + migrate + api1 + api2 + nginx,
   one command to run the whole system
-- **pytest** — 22 tests: signup/login/auth (8), orders/payments (13), and a
-  real-Postgres concurrent-ordering test (1)
+- **pytest** — 23 tests: signup/login/auth (8), orders/payments (14), and a real-Postgres concurrent-ordering test (1)
   covering success path, idempotent replay, insufficient inventory,
   unknown SKU, payment failure with rollback, payment success,
   double-payment rejection, cross-customer authorization, order
