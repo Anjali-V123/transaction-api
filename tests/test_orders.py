@@ -74,7 +74,7 @@ def test_insufficient_inventory_rejected_and_no_partial_state(client, cust1):
     inv = client.get("/inventory").json()
     assert inv[0]["quantity_available"] == 5  # unchanged, no partial writes
 
-    orders = client.get("/orders").json()
+    orders = client.get("/orders", headers=cust1).json()
     assert len(orders) == 0  # no order row created for the failed attempt
 
 
@@ -130,3 +130,18 @@ def test_cannot_pay_someone_elses_order(client, cust1, cust2):
 
     resp = client.post(f"/orders/{order['id']}/pay", json={"simulate_failure": False}, headers=cust2)
     assert resp.status_code == 403
+
+
+def test_orders_list_requires_auth(client):
+    assert client.get("/orders").status_code in (401, 403)
+
+
+def test_customer_sees_only_own_orders(client, cust1, cust2):
+    client.post("/orders", json={"idempotency_key": "k-a", "sku": "SKU1", "quantity": 1}, headers=cust1)
+    order2 = client.post(
+        "/orders", json={"idempotency_key": "k-b", "sku": "SKU1", "quantity": 1}, headers=cust2
+    ).json()
+
+    mine = client.get("/orders", headers=cust1).json()
+    assert len(mine) == 1 and mine[0]["id"] != order2["id"]
+    assert client.get(f"/orders/{order2['id']}", headers=cust1).status_code == 404

@@ -144,17 +144,17 @@ export default function App() {
     try {
       const [invRes, ordRes, healthRes] = await Promise.all([
         fetch('/inventory'),
-        fetch('/orders'),
+        fetch('/orders', { headers: authHeaders() }),
         fetch('/health'),
       ])
       setInventory(await invRes.json())
-      setOrders(await ordRes.json())
+      setOrders(ordRes.ok ? await ordRes.json() : [])
       const health = await healthRes.json()
       setInstance(health.instance)
     } catch {
       setError('Could not reach the API. Is the backend running?')
     }
-  }, [])
+  }, [authHeaders])
 
   useEffect(() => {
     if (!token) return

@@ -171,7 +171,15 @@ def create_order(
         return existing_order
 
     try:
-        item = db.get(models.InventoryItem, order_in.sku)
+        # SELECT ... FOR UPDATE: lock this inventory row until commit, so two
+        # concurrent orders for the same SKU can't both read the same
+        # quantity and both decrement it (a lost update that oversells).
+        item = (
+            db.query(models.InventoryItem)
+            .filter(models.InventoryItem.sku == order_in.sku)
+            .with_for_update()
+            .first()
+        )
         if item is None:
             raise HTTPException(status_code=404, detail="SKU not found")
         if item.quantity_available < order_in.quantity:
@@ -204,14 +212,26 @@ def create_order(
 
 
 @app.get("/orders", response_model=List[schemas.OrderOut])
-def list_orders(db: Session = Depends(get_db)):
-    return db.query(models.Order).all()
+def list_orders(
+    db: Session = Depends(get_db),
+    current_customer: models.Customer = Depends(get_current_customer),
+):
+    # Customers see only their own orders; admins see everything.
+    query = db.query(models.Order)
+    if not current_customer.is_admin:
+        query = query.filter(models.Order.customer_id == current_customer.id)
+    return query.all()
 
 
 @app.get("/orders/{order_id}", response_model=schemas.OrderOut)
-def get_order(order_id: str, db: Session = Depends(get_db)):
+def get_order(
+    order_id: str,
+    db: Session = Depends(get_db),
+    current_customer: models.Customer = Depends(get_current_customer),
+):
     order = db.get(models.Order, order_id)
-    if not order:
+    # 404 (not 403) for someone else's order, so order IDs can't be probed.
+    if not order or (order.customer_id != current_customer.id and not current_customer.is_admin):
         raise HTTPException(status_code=404, detail="Order not found")
     return order
 
@@ -230,7 +250,14 @@ def pay_order(
     order is marked FAILED, atomically -- the system never ends up in a
     state where stock is gone but no payment and no valid order exist.
     """
-    order = db.get(models.Order, order_id)
+    # Lock the order row so two concurrent /pay calls can't both see
+    # PENDING (which would restore inventory twice on a failed payment).
+    order = (
+        db.query(models.Order)
+        .filter(models.Order.id == order_id)
+        .with_for_update()
+        .first()
+    )
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     if order.customer_id != current_customer.id:
@@ -242,7 +269,12 @@ def pay_order(
 
     try:
         if payment.simulate_failure:
-            item = db.get(models.InventoryItem, order.sku)
+            item = (
+                db.query(models.InventoryItem)
+                .filter(models.InventoryItem.sku == order.sku)
+                .with_for_update()
+                .first()
+            )
             item.quantity_available += order.quantity
             order.status = models.OrderStatus.FAILED
         else:
