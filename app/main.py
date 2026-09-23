@@ -168,6 +168,12 @@ def create_order(
         .first()
     )
     if existing_order:
+        # A replay only returns the original order to the customer who
+        # created it. Keys are global (unique column), so if a different
+        # customer sends the same key we reject it rather than leak someone
+        # else's order.
+        if existing_order.customer_id != current_customer.id:
+            raise HTTPException(status_code=409, detail="Idempotency key already used")
         return existing_order
 
     try:

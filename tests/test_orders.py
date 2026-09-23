@@ -145,3 +145,13 @@ def test_customer_sees_only_own_orders(client, cust1, cust2):
     mine = client.get("/orders", headers=cust1).json()
     assert len(mine) == 1 and mine[0]["id"] != order2["id"]
     assert client.get(f"/orders/{order2['id']}", headers=cust1).status_code == 404
+
+
+def test_idempotency_key_cannot_expose_another_customers_order(client, cust1, cust2):
+    payload = {"idempotency_key": "shared-key", "sku": "SKU1", "quantity": 1}
+    first = client.post("/orders", json=payload, headers=cust1)
+    assert first.status_code == 201
+
+    replay_by_other = client.post("/orders", json=payload, headers=cust2)
+    assert replay_by_other.status_code == 409
+    assert "id" not in replay_by_other.json()
