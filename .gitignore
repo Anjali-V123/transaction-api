@@ -6,3 +6,6 @@ transactions.db
 .pytest_cache/
 node_modules/
 frontend/dist/
+traces/
+eval.db
+eval_results/traces.jsonl

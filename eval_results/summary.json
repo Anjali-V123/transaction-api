@@ -1,0 +1,15 @@
+{
+  "model": "openai/gpt-oss-120b",
+  "questions": 15,
+  "accuracy": 1.0,
+  "valid_structured_answers": 1.0,
+  "tool_selection_accuracy": 1.0,
+  "order_id_accuracy": 1.0,
+  "fact_accuracy": 1.0,
+  "leaks": 0,
+  "questions_needing_format_retry": 13,
+  "avg_steps": 3.07,
+  "avg_tokens": 1467,
+  "median_latency_ms": 8671,
+  "p95_latency_ms": 19493
+}

@@ -1,5 +1,7 @@
 # Transaction Processing API
 
+![tests](https://github.com/Anjali-V123/transaction-api/actions/workflows/tests.yml/badge.svg)
+
 A full-stack order/payment system: a FastAPI backend, a React dashboard,
 and a Docker Compose setup that runs it as two load-balanced replicas
 behind nginx with a shared Postgres database and a Redis cache. Built to
@@ -87,6 +89,81 @@ The same review closed an authorization gap: `GET /orders` and
 only their own orders (someone else's order returns `404`, so IDs can't
 be probed) and admins see all.
 
+## LLM order assistant
+
+`assistant/` adds a natural-language assistant on top of the API: a
+logged-in customer can ask "which of my orders are unpaid?" or "is the USB
+cable in stock?", and an LLM (OpenAI gpt-oss-120b, served by Groq) answers by calling the
+API's own endpoints as tools.
+
+```
+question -> LLM -> (tool calls -> API with the customer's JWT -> results -> LLM)* -> final_answer tool call -> validation
+```
+
+**Why not just paste the question into ChatGPT?** A general chatbot can't
+see this store's live orders, and giving it database access would bypass
+the API's authorization. Here the model can only reach data through the
+same endpoints -- and the same permission checks -- as the customer.
+
+Design decisions:
+
+- **Tools call the API, not the database, with the customer's own token.**
+  Authorization stays in one place. The assistant can't see other
+  customers' orders no matter what the prompt says, because that data isn't
+  reachable with the token it holds (prompt injection has nothing to leak).
+- **Read-only tools** (`list_my_orders`, `get_order`, `list_inventory`). The
+  assistant can't place, pay for, or change orders.
+- **Structured output via a `final_answer` tool.** The model answers by
+  calling a tool whose arguments are `{"answer": ..., "order_ids": [...]}`,
+  validated again with Pydantic. My first version asked for "only JSON" in
+  plain text; the evaluation showed gpt-oss-120b then tried to call a
+  non-existent tool named `JSON` on almost every question. Making the answer
+  itself a tool fixed it. Invalid answers go back to the model with the exact
+  error, up to 2 retries.
+- **Recovering from rejected tool calls.** When the provider rejects a
+  malformed tool call (e.g. the model sent `"status": null` for an optional
+  filter — the schema now allows null), the error is fed back to the model
+  so it can correct itself instead of the question failing.
+- **Grounding check.** Every order id in the answer must have appeared in a
+  tool result during that run; anything else is rejected as invented.
+- **Step limit** (6 model calls) so a confused model can't loop forever.
+- **Tracing.** Every LLM call and tool call (arguments, latency, tokens,
+  success/error) is appended to `traces/assistant.jsonl` under a run id. The
+  JWT is never logged; tool results are truncated.
+- **Testable without an LLM.** The model sits behind a one-method interface;
+  tests use a scripted fake, so the loop, retries, grounding check, step
+  limit, authorization and tracing are all tested deterministically with
+  no API key (`tests/test_assistant.py`).
+
+**Evaluation.** `python -m assistant.evaluate` seeds a fresh database with
+two customers and known orders, asks 15 fixed questions (lookups,
+arithmetic over orders, inventory questions, a request for another
+customer's order, a prompt-injection attempt, and a request to place an
+order), and scores each answer against the seeded data: tool selection,
+exact order-id set, key facts, and whether anything of the *other*
+customer's leaked. Results go to `eval_results/`.
+
+**Results** (gpt-oss-120b via Groq, 15 questions): **15/15 correct, 0 leaks**, 100% tool
+selection. 13 of 15 questions needed at least one self-correction round (a rejected tool
+call or answer sent back to the model); median latency 8.7 s, p95 19.5 s, ~1,470 tokens
+per question.
+
+How it got there, each step found by reading the traces:
+- **1/15:** the model tried to call a non-existent tool named `JSON` (my prompt asked for
+  "only JSON"), and sent `"status": null` for an optional filter the schema didn't allow.
+  Fix: the answer became a `final_answer` tool, the filter became nullable, and rejected
+  tool calls are fed back to the model.
+- **6/15:** the model often ended a turn with an empty reply. Fix: `tool_choice="required"`,
+  which is safe because answering is itself a tool call.
+- **15/15.** Next step: cut the self-correction rate, which is what drives latency.
+
+Try it against the running Docker Compose stack:
+
+```bash
+export GROQ_API_KEY=...        # PowerShell: $env:GROQ_API_KEY="..."
+python -m assistant.cli --email you@example.com --password yourpassword "Which of my orders are unpaid?"
+```
+
 ## Tech stack
 
 - **FastAPI** + **SQLAlchemy** — REST API, transaction management
@@ -101,7 +178,11 @@ be probed) and admins see all.
 - **nginx** — round-robin load balancer across two API replicas
 - **Docker Compose** — postgres + redis + migrate + api1 + api2 + nginx,
   one command to run the whole system
-- **pytest** — 23 tests: signup/login/auth (8), orders/payments (14), and a real-Postgres concurrent-ordering test (1)
+- **Groq (gpt-oss-120b)** — tool-calling LLM behind the order assistant
+- **GitHub Actions** — runs the whole test suite, including the
+  real-Postgres concurrency test, on every push
+- **pytest** — 36 tests: signup/login/auth (8), orders/payments (14), a
+  real-Postgres concurrent-ordering test (1), and the LLM assistant (13)
   covering success path, idempotent replay, insufficient inventory,
   unknown SKU, payment failure with rollback, payment success,
   double-payment rejection, cross-customer authorization, order
